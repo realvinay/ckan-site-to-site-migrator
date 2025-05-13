@@ -1,0 +1,6 @@
+{
+  "source_url": "<source ckan website>",
+  "source_api_key": "<source ckan site api key>",
+  "target_url": "<destination ckan website>",
+  "target_api_key": "<desitntion ckan site api key"
+}
