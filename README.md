@@ -4,7 +4,7 @@ A Python tool for migrating data between CKAN instances, specifically designed t
 
 ## Overview
 
-This script facilitates the migration of organizations, datasets, and resources from a source CKAN instance (version 2.8.2) to a target CKAN instance (version 2.11.2). It addresses
+This script facilitates the migration of organizations, datasets, and resources from a source CKAN instance (version 2.8.2) to a target CKAN instance (version 2.11.2). 
 
 ## Example usage
 ```
