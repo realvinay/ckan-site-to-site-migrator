@@ -5,6 +5,7 @@ and upload to CKAN 2.11.2 with a complete migration strategy
 
 This script reads configuration from a JSON file containing source and target information.
 It allows selective migration of organizations, datasets, and resources.
+Uses persistent sessions and disables SSL verification for compatibility.
 """
 
 import os
@@ -17,6 +18,10 @@ import logging
 import sys
 import argparse
 from urllib.parse import urljoin
+from urllib3.exceptions import InsecureRequestWarning
+
+# Disable SSL warnings when verification is disabled
+requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
 # Set up logging
 logging.basicConfig(
@@ -40,6 +45,15 @@ class CkanMigrator:
         self.org_dir = os.path.join(self.download_dir, "organizations")
         self.datasets_dir = os.path.join(self.download_dir, "datasets")
         
+        # Create persistent session with SSL verification disabled
+        self.session = requests.Session()
+        self.session.verify = False
+        
+        # Set default headers
+        self.session.headers.update({
+            'User-Agent': 'CKAN-Migration-Tool/1.0'
+        })
+        
         # Create download directory if it doesn't exist
         for directory in [self.download_dir, self.org_dir, self.datasets_dir]:
             if not os.path.exists(directory):
@@ -57,6 +71,14 @@ class CkanMigrator:
                 logger.info(f"Loaded organization mapping with {len(self.org_id_mapping)} entries")
             except Exception as e:
                 logger.error(f"Error loading organization mapping: {e}")
+
+    def __enter__(self):
+        """Context manager entry"""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - close session"""
+        self.session.close()
 
     def save_org_mapping(self):
         """Save the organization mapping to a file"""
@@ -76,7 +98,7 @@ class CkanMigrator:
             # Check status of target CKAN
             check_url = urljoin(self.target_url, "api/3/action/status_show")
             headers = {"Authorization": self.target_api_key}
-            response = requests.get(check_url, headers=headers)
+            response = self.session.get(check_url, headers=headers)
             
             if response.status_code == 200:
                 logger.info("Target CKAN instance is accessible.")
@@ -103,7 +125,7 @@ class CkanMigrator:
             return False
     
     def source_request(self, url, method="GET", params=None, data=None, files=None):
-        """Make a request to the source CKAN"""
+        """Make a request to the source CKAN using persistent session"""
         if params is None:
             params = {}
         
@@ -115,9 +137,9 @@ class CkanMigrator:
         for attempt in range(max_retries):
             try:
                 if method == "GET":
-                    response = requests.get(url, headers=headers, params=params)
+                    response = self.session.get(url, headers=headers, params=params)
                 elif method == "POST":
-                    response = requests.post(url, headers=headers, json=data, files=files)
+                    response = self.session.post(url, headers=headers, json=data, files=files)
                 
                 if response.status_code == 200:
                     return response.json()
@@ -149,7 +171,7 @@ class CkanMigrator:
         return {"success": False, "error": "Max retries exceeded"}
     
     def target_request(self, url, method="GET", params=None, data=None, files=None):
-        """Make a request to the target CKAN"""
+        """Make a request to the target CKAN using persistent session"""
         if params is None:
             params = {}
         
@@ -161,9 +183,9 @@ class CkanMigrator:
         for attempt in range(max_retries):
             try:
                 if method == "GET":
-                    response = requests.get(url, headers=headers, params=params)
+                    response = self.session.get(url, headers=headers, params=params)
                 elif method == "POST":
-                    response = requests.post(url, headers=headers, json=data, files=files)
+                    response = self.session.post(url, headers=headers, json=data, files=files)
                 
                 if response.status_code == 200:
                     return response.json()
@@ -209,15 +231,7 @@ class CkanMigrator:
         return sanitized
     
     def get_organization_list(self, specific_orgs=None):
-        """
-        Get list of organizations from source CKAN
-        
-        Args:
-            specific_orgs: List of specific organization names or IDs to include
-        
-        Returns:
-            List of organization IDs
-        """
+        """Get list of organizations from source CKAN"""
         url = urljoin(self.source_url, "api/3/action/organization_list")
         
         logger.info("Retrieving list of organizations...")
@@ -358,16 +372,7 @@ class CkanMigrator:
         return True
     
     def get_dataset_list(self, specific_datasets=None, org_id=None):
-        """
-        Get list of datasets from source CKAN
-        
-        Args:
-            specific_datasets: List of specific dataset names or IDs to include
-            org_id: Organization ID to filter datasets by
-            
-        Returns:
-            List of dataset IDs
-        """
+        """Get list of datasets from source CKAN"""
         if specific_datasets:
             # First try to get datasets directly by ID
             dataset_ids = []
@@ -455,8 +460,9 @@ class CkanMigrator:
             logger.info(f"  Downloading resource: {resource_id}")
             
             try:
-                # Download resource file
-                response = requests.get(resource_url, headers={"Authorization": self.source_api_key})
+                # Download resource file using the persistent session
+                headers = {"Authorization": self.source_api_key}
+                response = self.session.get(resource_url, headers=headers)
                 response.raise_for_status()
                 
                 with open(resource_path, 'wb') as f:
@@ -622,8 +628,8 @@ class CkanMigrator:
             # CKAN 2.11.2 expects a simple HTTP POST form, not JSON
             headers = {"Authorization": self.target_api_key}
             
-            # Make the request manually since our helper expects JSON
-            response = requests.post(url, headers=headers, data=data, files=files)
+            # Make the request using the persistent session
+            response = self.session.post(url, headers=headers, data=data, files=files)
             
             if response.status_code == 200:
                 try:
@@ -651,7 +657,7 @@ class CkanMigrator:
                     }
                     
                     alt_url = urljoin(self.target_url, "api/3/action/resource_create")
-                    alt_response = requests.post(alt_url, headers=headers, json=minimal_data)
+                    alt_response = self.session.post(alt_url, headers=headers, json=minimal_data)
                     
                     if alt_response.status_code == 200 and alt_response.json().get("success", False):
                         logger.info("  Successfully created resource placeholder")
@@ -668,20 +674,17 @@ class CkanMigrator:
     
     def migrate_all(self, migrate_orgs=True, migrate_datasets=True, migrate_resources=True, 
                    specific_orgs=None, specific_datasets=None):
-        """
-        Migrate data from source to target CKAN
-        
-        Args:
-            migrate_orgs: Whether to migrate organizations
-            migrate_datasets: Whether to migrate datasets
-            migrate_resources: Whether to migrate resources
-            specific_orgs: List of specific organization names/IDs to migrate
-            specific_datasets: List of specific dataset names/IDs to migrate
-        """
+        """Migrate data from source to target CKAN"""
         # First check target database readiness
         if not self.prepare_target_database():
             logger.error("Target database preparation failed. Please resolve issues before proceeding.")
             return
+        
+        # Initialize counters
+        successful_org_migrations = 0
+        successful_dataset_migrations = 0
+        org_ids = []
+        package_ids = []
         
         # Migrate organizations if requested
         if migrate_orgs:
@@ -692,7 +695,6 @@ class CkanMigrator:
                 logger.warning("No organizations found to migrate.")
             else:
                 total_orgs = len(org_ids)
-                successful_org_migrations = 0
                 
                 # Process each organization
                 for i, org_id in enumerate(org_ids):
@@ -737,7 +739,6 @@ class CkanMigrator:
                 return
             
             total_packages = len(package_ids)
-            successful_dataset_migrations = 0
             
             # Process each package
             for i, package_id in enumerate(package_ids):
@@ -762,10 +763,10 @@ class CkanMigrator:
         
         # Display summary
         logger.info("\n===== MIGRATION SUMMARY =====")
-        if migrate_orgs:
+        if migrate_orgs and org_ids:
             logger.info(f"Organizations: {successful_org_migrations}/{len(org_ids)} migrated successfully")
-        if migrate_datasets:
-            logger.info(f"Datasets: {successful_dataset_migrations}/{total_packages} migrated successfully")
+        if migrate_datasets and package_ids:
+            logger.info(f"Datasets: {successful_dataset_migrations}/{len(package_ids)} migrated successfully")
         
         logger.info("\n===== POST-MIGRATION STEPS =====")
         logger.info("1. Run 'ckan -c /etc/ckan/default/ckan.ini search-index rebuild' on the target system")
@@ -857,6 +858,7 @@ if __name__ == "__main__":
     logger.info(f"Source CKAN: {config['source_url']}")
     logger.info(f"Target CKAN: {config['target_url']}")
     logger.info(f"\nComponents to migrate: {', '.join(components)}")
+    logger.info("SSL verification: DISABLED")
     
     if args.orgs:
         logger.info(f"Filtering to specified organizations: {args.orgs}")
@@ -873,18 +875,17 @@ if __name__ == "__main__":
             logger.info("Migration aborted.")
             sys.exit(0)
     
-    # Initialize and run the migrator
-    migrator = CkanMigrator(
+    # Initialize and run the migrator using context manager
+    with CkanMigrator(
         config['source_url'],
         config['source_api_key'],
         config['target_url'],
         config['target_api_key']
-    )
-    
-    migrator.migrate_all(
-        migrate_orgs=migrate_orgs,
-        migrate_datasets=migrate_datasets,
-        migrate_resources=migrate_resources,
-        specific_orgs=args.orgs,
-        specific_datasets=args.datasets
-    )
+    ) as migrator:
+        migrator.migrate_all(
+            migrate_orgs=migrate_orgs,
+            migrate_datasets=migrate_datasets,
+            migrate_resources=migrate_resources,
+            specific_orgs=args.orgs,
+            specific_datasets=args.datasets
+        )
